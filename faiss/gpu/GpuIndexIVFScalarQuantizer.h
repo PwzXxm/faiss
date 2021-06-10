@@ -45,7 +45,7 @@ class GpuIndexIVFScalarQuantizer : public GpuIndexIVF {
     GpuResourcesProvider* provider,
     int dims,
     int nlist,
-    faiss::ScalarQuantizer::QuantizerType qtype,
+    faiss::QuantizerType qtype,
     faiss::MetricType metric = MetricType::METRIC_L2,
     bool encodeResidual = true,
     GpuIndexIVFScalarQuantizerConfig config =
@@ -102,7 +102,8 @@ class GpuIndexIVFScalarQuantizer : public GpuIndexIVF {
                    const float* x,
                    int k,
                    float* distances,
-                   Index::idx_t* labels) const override;
+                   Index::idx_t* labels,
+                   ConcurrentBitsetPtr bitset = nullptr) const override;
 
   /// Called from train to handle SQ residual training
   void trainResiduals_(Index::idx_t n, const float* x);

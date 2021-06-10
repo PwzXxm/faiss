@@ -305,6 +305,7 @@ runMultiPassTile(GpuResources* res,
                  NoTypeTensor<3, true>& precompTerm2,
                  NoTypeTensor<3, true>& precompTerm3,
                  Tensor<int, 2, true>& topQueryToCentroid,
+                 Tensor<uint8_t, 1, true>& bitset,
                  bool useFloat16Lookup,
                  bool interleavedCodeLayout,
                  int bitsPerSubQuantizer,
@@ -351,6 +352,7 @@ runMultiPassTile(GpuResources* res,
           allDistances);                                                \
     } while (0)
 
+#ifdef FAISS_USE_FLOAT16
     if (useFloat16Lookup) {
       auto precompTerm2T = precompTerm2.toTensor<half>();
       auto precompTerm3T = precompTerm3.toTensor<half>();
@@ -410,6 +412,36 @@ runMultiPassTile(GpuResources* res,
           break;
       }
     }
+#else
+    auto precompTerm2T = precompTerm2.toTensor<float>();
+    auto precompTerm3T = precompTerm3.toTensor<float>();
+
+    switch (bitsPerSubQuantizer) {
+      case 4:
+      {
+        RUN_INTERLEAVED(4, float);
+      }
+      break;
+      case 5:
+      {
+        RUN_INTERLEAVED(5, float);
+      }
+      break;
+      case 6:
+      {
+        RUN_INTERLEAVED(6, float);
+      }
+      break;
+      case 8:
+      {
+        RUN_INTERLEAVED(8, float);
+      }
+      break;
+      default:
+        FAISS_ASSERT(false);
+        break;
+    }
+#endif
   } else {
     // Convert all codes to a distance, and write out (distance,
     // index) values for all intermediate results
@@ -420,7 +452,12 @@ runMultiPassTile(GpuResources* res,
     auto block = dim3(kThreadsPerBlock);
 
     // pq precomputed terms (2 + 3)
-    auto smem = useFloat16Lookup ? sizeof(half) : sizeof(float);
+    auto smem = sizeof(float);
+#ifdef FAISS_USE_FLOAT16
+    if (useFloat16Lookup) {
+      smem = sizeof(half);
+    }
+#endif
 
     smem *= numSubQuantizers * numSubQuantizerCodes;
     FAISS_ASSERT(smem <= getMaxSharedMemPerBlockCurrentDevice());
@@ -443,6 +480,7 @@ runMultiPassTile(GpuResources* res,
           allDistances);                                                \
     } while (0)
 
+#ifdef  FAISS_USE_FLOAT16
 #define RUN_PQ(NUM_SUB_Q)                       \
     do {                                        \
       if (useFloat16Lookup) {                   \
@@ -451,6 +489,12 @@ runMultiPassTile(GpuResources* res,
         RUN_PQ_OPT(NUM_SUB_Q, float, float4);   \
       }                                         \
     } while (0)
+#else
+#define RUN_PQ(NUM_SUB_Q)                       \
+    do {                                        \
+      RUN_PQ_OPT(NUM_SUB_Q, float, float4);     \
+    } while (0)
+#endif
 
     switch (numSubQuantizers) {
       case 1:
@@ -514,7 +558,11 @@ runMultiPassTile(GpuResources* res,
   }
 
   // k-select the output in chunks, to increase parallelism
-  runPass1SelectLists(prefixSumOffsets,
+  runPass1SelectLists(listIndices,
+                      indicesOptions,
+                      prefixSumOffsets,
+                      topQueryToCentroid,
+                      bitset,
                       allDistances,
                       topQueryToCentroid.getSize(1),
                       k,
@@ -550,6 +598,7 @@ void runPQScanMultiPassPrecomputed(Tensor<float, 2, true>& queries,
                                    // (query id)(sub q)(code id)
                                    NoTypeTensor<3, true>& precompTerm3,
                                    Tensor<int, 2, true>& topQueryToCentroid,
+                                   Tensor<uint8_t, 1, true>& bitset,
                                    bool useFloat16Lookup,
                                    bool interleavedCodeLayout,
                                    int bitsPerSubQuantizer,
@@ -711,6 +760,7 @@ void runPQScanMultiPassPrecomputed(Tensor<float, 2, true>& queries,
                      precompTerm2,
                      term3View,
                      coarseIndicesView,
+                     bitset,
                      useFloat16Lookup,
                      interleavedCodeLayout,
                      bitsPerSubQuantizer,

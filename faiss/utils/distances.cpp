@@ -17,10 +17,12 @@
 
 #include <omp.h>
 
+#include <faiss/BuilderSuspend.h>
+#include <faiss/FaissHook.h>
 #include <faiss/impl/AuxIndexStructures.h>
 #include <faiss/impl/FaissAssert.h>
 #include <faiss/impl/ResultHandler.h>
-
+#include <faiss/utils/ConcurrentBitset.h>
 
 
 #ifndef FINTEGER
@@ -109,87 +111,120 @@ void fvec_renorm_L2 (size_t d, size_t nx, float * __restrict x)
 
 namespace {
 
+int parallel_policy_threshold = 65535;
 
-
-/* Find the nearest neighbors for nx queries in a set of ny vectors */
 template<class ResultHandler>
-void exhaustive_inner_product_seq (
-        const float * x,
-        const float * y,
-        size_t d, size_t nx, size_t ny,
-        ResultHandler &res)
+void exhaustive_parallel_on_nx (
+    const float * x,
+    const float * y,
+    size_t d, size_t nx, size_t ny,
+    ResultHandler & res,
+    fvec_func_ptr dis_compute_func,
+    ConcurrentBitsetPtr bitset = nullptr)
 {
-    size_t check_period = InterruptCallback::get_period_hint (ny * d);
-
-    check_period *= omp_get_max_threads();
-
     using SingleResultHandler = typename ResultHandler::SingleResultHandler;
-
-    for (size_t i0 = 0; i0 < nx; i0 += check_period) {
-        size_t i1 = std::min(i0 + check_period, nx);
-
 #pragma omp parallel
-        {
-            SingleResultHandler resi(res);
+    {
+        SingleResultHandler resi(res);
 #pragma omp for
-            for (int64_t i = i0; i < i1; i++) {
-                const float * x_i = x + i * d;
-                const float * y_j = y;
+        for (int64_t i = 0; i < nx; i++) {
+            const float* x_i = x + i * d;
+            const float* y_j = y;
 
-                resi.begin(i);
+            resi.begin(i);
 
-                for (size_t j = 0; j < ny; j++) {
-                    float ip = fvec_inner_product (x_i, y_j, d);
+            for (size_t j = 0; j < ny; j++) {
+                if (!bitset || !bitset->test(j)) {
+                    float ip = dis_compute_func(x_i, y_j, d);
                     resi.add_result(ip, j);
-                    y_j += d;
                 }
-                resi.end();
+                y_j += d;
             }
+            resi.end();
         }
-        InterruptCallback::check ();
     }
-
 }
 
 template<class ResultHandler>
-void exhaustive_L2sqr_seq (
-                const float * x,
-                const float * y,
-                size_t d, size_t nx, size_t ny,
-                ResultHandler & res)
+void exhaustive_parallel_on_ny (
+    const float * x,
+    const float * y,
+    size_t d, size_t nx, size_t ny,
+    ResultHandler & res,
+    fvec_func_ptr dis_compute_func,
+    ConcurrentBitsetPtr bitset = nullptr)
 {
-
-    size_t check_period = InterruptCallback::get_period_hint (ny * d);
-    check_period *= omp_get_max_threads();
     using SingleResultHandler = typename ResultHandler::SingleResultHandler;
+    size_t k = res.k;
+    size_t thread_max_num = omp_get_max_threads();
 
-    for (size_t i0 = 0; i0 < nx; i0 += check_period) {
-        size_t i1 = std::min(i0 + check_period, nx);
-
-#pragma omp parallel
-        {
-            SingleResultHandler resi(res);
-#pragma omp for
-            for (int64_t i = i0; i < i1; i++) {
-                const float * x_i = x + i * d;
-                const float * y_j = y;
-                resi.begin(i);
-                for (size_t j = 0; j < ny; j++) {
-                    float disij = fvec_L2sqr (x_i, y_j, d);
-                    resi.add_result(disij, j);
-                    y_j += d;
-                }
-                resi.end();
-            }
-        }
-        InterruptCallback::check ();
+    size_t block_x =
+        std::min(get_L3_Size() / (d * sizeof(float) + thread_max_num * k * (sizeof(float) + sizeof(int64_t))), nx);
+    if (block_x == 0) {
+        block_x = 1;
     }
 
-};
+    size_t all_heap_size = block_x * k * thread_max_num;
+    ResultHandler* ress = res.clone_n(thread_max_num, block_x);
 
+    for (size_t x_from = 0, x_to; x_from < nx; x_from = x_to) {
+        x_to = std::min(nx, x_from + block_x);
+        size_t size = x_to - x_from;
+        size_t thread_heap_size = size * k;
 
+        // init heap
+        for (int t = 0; t < thread_max_num; t++) {
+            ress[t].begin_multiple(0, block_x);
+        }
 
+#pragma omp parallel for schedule(static)
+        for (size_t j = 0; j < ny; j++) {
+            int t = omp_get_thread_num();
+            if (!bitset || !bitset->test(j)) {
+                const float* y_j = y + j * d;
+                const float* x_i = x + x_from * d;
+                for (size_t i = 0; i < size; i++) {
+                    float ip = dis_compute_func(x_i, y_j, d);
+                    ress[t].add_single_result(i, ip, j);
+                    x_i += d;
+                }
+            }
+        }
 
+        // merge heap
+        // for ReservoirResultHander maybe to_results first and then merge?
+        for (size_t t = 1; t < thread_max_num; t++) {
+            for (size_t i = 0; i < size; ++i) {
+                ress[0].merge(i, ress[t]);
+            }
+        }
+
+        // sort
+        ress[0].end_multiple();
+
+        // copy result
+        res.copy_from(ress[0], x_from, size);
+    }
+    delete[] ress;
+}
+
+/* Find the nearest neighbors for nx queries in a set of ny vectors */
+template<class ResultHandler>
+void exhaustive_L2sqr_IP_seq (
+        const float * x,
+        const float * y,
+        size_t d, size_t nx, size_t ny,
+        ResultHandler & res,
+        fvec_func_ptr dis_compute_func,
+        ConcurrentBitsetPtr bitset = nullptr)
+{
+    size_t thread_max_num = omp_get_max_threads();
+    if (ny > parallel_policy_threshold || (nx < thread_max_num / 2 && ny >= thread_max_num * 32)) {
+        exhaustive_parallel_on_ny(x, y, d, nx, ny, res, dis_compute_func, bitset);
+    } else {
+        exhaustive_parallel_on_nx(x, y, d, nx, ny, res, dis_compute_func, bitset);
+    }
+}
 
 /** Find the nearest neighbors for nx queries in a set of ny vectors */
 template<class ResultHandler>
@@ -197,7 +232,8 @@ void exhaustive_inner_product_blas (
         const float * x,
         const float * y,
         size_t d, size_t nx, size_t ny,
-        ResultHandler & res)
+        ResultHandler & res,
+        ConcurrentBitsetPtr bitset = nullptr)
 {
     // BLAS does not like empty matrices
     if (nx == 0 || ny == 0) return;
@@ -205,7 +241,8 @@ void exhaustive_inner_product_blas (
     /* block sizes */
     const size_t bs_x = distance_compute_blas_query_bs;
     const size_t bs_y = distance_compute_blas_database_bs;
-    std::unique_ptr<float[]> ip_block(new float[bs_x * bs_y]);
+    float* ip_block = new float[bs_x * bs_y];
+    ScopeDeleter<float> del1(ip_block);;
 
     for (size_t i0 = 0; i0 < nx; i0 += bs_x) {
         size_t i1 = i0 + bs_x;
@@ -223,11 +260,10 @@ void exhaustive_inner_product_blas (
                 sgemm_ ("Transpose", "Not transpose", &nyi, &nxi, &di, &one,
                         y + j0 * d, &di,
                         x + i0 * d, &di, &zero,
-                        ip_block.get(), &nyi);
+                        ip_block, &nyi);
             }
 
-            res.add_results(j0, j1, ip_block.get());
-
+            res.add_results(j0, j1, ip_block, bitset);
         }
         res.end_multiple();
         InterruptCallback::check ();
@@ -246,7 +282,8 @@ void exhaustive_L2sqr_blas (
         const float * y,
         size_t d, size_t nx, size_t ny,
         ResultHandler & res,
-        const float *y_norms = nullptr)
+        const float *y_norms = nullptr,
+        ConcurrentBitsetPtr bitset = nullptr)
 {
     // BLAS does not like empty matrices
     if (nx == 0 || ny == 0) return;
@@ -287,18 +324,21 @@ void exhaustive_L2sqr_blas (
                         ip_block.get(), &nyi);
             }
 
+#pragma omp parallel for
             for (int64_t i = i0; i < i1; i++) {
                 float *ip_line = ip_block.get() + (i - i0) * (j1 - j0);
 
                 for (size_t j = j0; j < j1; j++) {
-                    float ip = *ip_line;
-                    float dis = x_norms[i] + y_norms[j] - 2 * ip;
+                    if (!bitset || !bitset->test(j)) {
+                        float ip = *ip_line;
+                        float dis = x_norms[i] + y_norms[j] - 2 * ip;
 
-                    // negative values can occur for identical vectors
-                    // due to roundoff errors
-                    if (dis < 0) dis = 0;
+                        // negative values can occur for identical vectors
+                        // due to roundoff errors
+                        if (dis < 0) dis = 0;
 
-                    *ip_line = dis;
+                        *ip_line = dis;
+                    }
                     ip_line++;
                 }
             }
@@ -309,7 +349,73 @@ void exhaustive_L2sqr_blas (
     }
 }
 
+template<class DistanceCorrection, class ResultHandler>
+static void knn_jaccard_blas (const float * x,
+                              const float * y,
+                              size_t d, size_t nx, size_t ny,
+                              ResultHandler & res,
+                              const DistanceCorrection &corr,
+                              ConcurrentBitsetPtr bitset = nullptr)
+{
+    // BLAS does not like empty matrices
+    if (nx == 0 || ny == 0) return;
 
+    /* block sizes */
+    const size_t bs_x = 4096, bs_y = 1024;
+    // const size_t bs_x = 16, bs_y = 16;
+    float *ip_block = new float[bs_x * bs_y];
+    float *x_norms = new float[nx];
+    float *y_norms = new float[ny];
+    ScopeDeleter<float> del1(ip_block), del3(x_norms), del2(y_norms);
+
+    fvec_norms_L2sqr (x_norms, x, d, nx);
+    fvec_norms_L2sqr (y_norms, y, d, ny);
+
+    for (size_t i0 = 0; i0 < nx; i0 += bs_x) {
+        size_t i1 = i0 + bs_x;
+        if(i1 > nx) i1 = nx;
+
+        res.begin_multiple(i0, i1);
+
+        for (size_t j0 = 0; j0 < ny; j0 += bs_y) {
+            size_t j1 = j0 + bs_y;
+            if (j1 > ny) j1 = ny;
+            /* compute the actual dot products */
+            {
+                float one = 1, zero = 0;
+                FINTEGER nyi = j1 - j0, nxi = i1 - i0, di = d;
+                sgemm_ ("Transpose", "Not transpose", &nyi, &nxi, &di, &one,
+                        y + j0 * d, &di,
+                        x + i0 * d, &di, &zero,
+                        ip_block, &nyi);
+            }
+
+            /* collect minima */
+#pragma omp parallel for
+            for (size_t i = i0; i < i1; i++) {
+                float *ip_line = ip_block + (i - i0) * (j1 - j0);
+
+                for (size_t j = j0; j < j1; j++) {
+                    if(!bitset || !bitset->test(j)){
+                        float ip = *ip_line;
+                        float dis = 1.0 - ip / (x_norms[i] + y_norms[j] - ip);
+
+                        // negative values can occur for identical vectors
+                        // due to roundoff errors
+                        if (dis < 0) dis = 0;
+
+                        dis = corr (dis, i, j);
+                        *ip_line = dis;
+                    }
+                    ip_line++;
+                }
+            }
+            res.add_results(j0, j1, ip_block);
+        }
+        res.end_multiple();
+        InterruptCallback::check ();
+    }
+}
 
 } // anonymous namespace
 
@@ -329,23 +435,24 @@ int distance_compute_min_k_reservoir = 100;
 void knn_inner_product (const float * x,
         const float * y,
         size_t d, size_t nx, size_t ny,
-        float_minheap_array_t * ha)
+        float_minheap_array_t * ha,
+        ConcurrentBitsetPtr bitset)
 {
     if (ha->k < distance_compute_min_k_reservoir) {
         HeapResultHandler<CMin<float, int64_t>> res(
             ha->nh, ha->val, ha->ids, ha->k);
         if (nx < distance_compute_blas_threshold) {
-            exhaustive_inner_product_seq (x, y, d, nx, ny, res);
+            exhaustive_L2sqr_IP_seq(x, y, d, nx, ny, res, fvec_inner_product, bitset);
         } else {
-            exhaustive_inner_product_blas (x, y, d, nx, ny, res);
+            exhaustive_inner_product_blas (x, y, d, nx, ny, res, bitset);
         }
     } else {
         ReservoirResultHandler<CMin<float, int64_t>> res(
             ha->nh, ha->val, ha->ids, ha->k);
         if (nx < distance_compute_blas_threshold) {
-            exhaustive_inner_product_seq (x, y, d, nx, ny, res);
+            exhaustive_L2sqr_IP_seq(x, y, d, nx, ny, res, fvec_inner_product, bitset);
         } else {
-            exhaustive_inner_product_blas (x, y, d, nx, ny, res);
+            exhaustive_inner_product_blas (x, y, d, nx, ny, res, bitset);
         }
     }
 }
@@ -358,7 +465,8 @@ void knn_L2sqr (
         const float * y,
         size_t d, size_t nx, size_t ny,
         float_maxheap_array_t * ha,
-        const float *y_norm2
+        const float *y_norm2,
+        ConcurrentBitsetPtr bitset
 ) {
 
     if (ha->k < distance_compute_min_k_reservoir) {
@@ -366,18 +474,41 @@ void knn_L2sqr (
             ha->nh, ha->val, ha->ids, ha->k);
 
         if (nx < distance_compute_blas_threshold) {
-            exhaustive_L2sqr_seq (x, y, d, nx, ny, res);
+            exhaustive_L2sqr_IP_seq(x, y, d, nx, ny, res, fvec_L2sqr, bitset);
         } else {
-            exhaustive_L2sqr_blas (x, y, d, nx, ny, res, y_norm2);
+            exhaustive_L2sqr_blas (x, y, d, nx, ny, res, y_norm2, bitset);
         }
     } else {
         ReservoirResultHandler<CMax<float, int64_t>> res(
             ha->nh, ha->val, ha->ids, ha->k);
         if (nx < distance_compute_blas_threshold) {
-            exhaustive_L2sqr_seq (x, y, d, nx, ny, res);
+            exhaustive_L2sqr_IP_seq(x, y, d, nx, ny, res, fvec_L2sqr, bitset);
         } else {
-            exhaustive_L2sqr_blas (x, y, d, nx, ny, res, y_norm2);
+            exhaustive_L2sqr_blas (x, y, d, nx, ny, res, y_norm2, bitset);
         }
+    }
+}
+
+struct NopDistanceCorrection {
+  float operator()(float dis, size_t /*qno*/, size_t /*bno*/) const {
+    return dis;
+    }
+};
+
+void knn_jaccard (const float * x,
+                  const float * y,
+                  size_t d, size_t nx, size_t ny,
+                  float_maxheap_array_t * ha,
+                  ConcurrentBitsetPtr bitset)
+{
+    if (d % 4 == 0 && nx < distance_compute_blas_threshold) {
+//        knn_jaccard_sse (x, y, d, nx, ny, res);
+        printf("jaccard sse not implemented!\n");
+    } else {
+        NopDistanceCorrection nop;
+        HeapResultHandler<CMax<float, int64_t>> res (
+            ha->nh, ha->val, ha->ids, ha->k);
+        knn_jaccard_blas (x, y, d, nx, ny, res, nop, bitset);
     }
 }
 
@@ -398,9 +529,10 @@ void range_search_L2sqr (
 {
     RangeSearchResultHandler<CMax<float, int64_t>> resh(res, radius);
     if (nx < distance_compute_blas_threshold) {
-        exhaustive_L2sqr_seq (x, y, d, nx, ny, resh);
+        // TODO: Refactor range search result handler
+        // exhaustive_L2sqr_seq (x, y, d, nx, ny, resh);
     } else {
-        exhaustive_L2sqr_blas (x, y, d, nx, ny, resh);
+        // exhaustive_L2sqr_blas (x, y, d, nx, ny, resh);
     }
 }
 
@@ -414,9 +546,9 @@ void range_search_inner_product (
 
     RangeSearchResultHandler<CMin<float, int64_t>> resh(res, radius);
     if (nx < distance_compute_blas_threshold) {
-        exhaustive_inner_product_seq (x, y, d, nx, ny, resh);
+        // exhaustive_inner_product_seq (x, y, d, nx, ny, resh);
     } else {
-        exhaustive_inner_product_blas (x, y, d, nx, ny, resh);
+        // exhaustive_inner_product_blas (x, y, d, nx, ny, resh);
     }
 }
 
@@ -618,6 +750,79 @@ void inner_product_to_L2sqr(float* __restrict dis,
         for (size_t i = 0; i < n2; i++)
             disj[i] = nr1[j] + nr2[i] - 2 * disj[i];
     }
+}
+
+
+void elkan_L2_sse (
+        const float * x,
+        const float * y,
+        size_t d, size_t nx, size_t ny,
+        int64_t *ids, float *val) {
+
+    if (nx == 0 || ny == 0) {
+        return;
+    }
+
+    const size_t bs_y = 1024;
+    float *data = (float *) malloc((bs_y * (bs_y - 1) / 2) * sizeof (float));
+
+    for (size_t j0 = 0; j0 < ny; j0 += bs_y) {
+        BuilderSuspend::check_wait();
+
+        size_t j1 = j0 + bs_y;
+        if (j1 > ny) j1 = ny;
+
+        auto Y = [&](size_t i, size_t j) -> float& {
+            assert(i != j);
+            i -= j0, j -= j0;
+            return (i > j) ? data[j + i * (i - 1) / 2] : data[i + j * (j - 1) / 2];
+        };
+
+#pragma omp parallel
+        {
+            int nt = omp_get_num_threads();
+            int rank = omp_get_thread_num();
+            for (size_t i = j0 + 1 + rank; i < j1; i += nt) {
+                const float* y_i = y + i * d;
+                for (size_t j = j0; j < i; j++) {
+                    const float* y_j = y + j * d;
+                    Y(i, j) = fvec_L2sqr(y_i, y_j, d);
+                }
+            }
+        }
+
+#pragma omp parallel for
+        for (size_t i = 0; i < nx; i++) {
+            const float *x_i = x + i * d;
+
+            int64_t ids_i = j0;
+            float val_i = fvec_L2sqr(x_i, y + j0 * d, d);
+            float val_i_time_4 = val_i * 4;
+            for (size_t j = j0 + 1; j < j1; j++) {
+                if (val_i_time_4 <= Y(ids_i, j)) {
+                    continue;
+                }
+                const float *y_j = y + j * d;
+                float disij = fvec_L2sqr(x_i, y_j, d / 2);
+                if (disij >= val_i) {
+                    continue;
+                }
+                disij += fvec_L2sqr(x_i + d / 2, y_j + d / 2, d - d / 2);
+                if (disij < val_i) {
+                    ids_i = j;
+                    val_i = disij;
+                    val_i_time_4 = val_i * 4;
+                }
+            }
+
+            if (j0 == 0 || val[i] > val_i) {
+                val[i] = val_i;
+                ids[i] = ids_i;
+            }
+        }
+    }
+
+    free(data);
 }
 
 

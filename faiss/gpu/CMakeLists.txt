@@ -16,6 +16,7 @@ target_sources(faiss PRIVATE
   GpuIndexIVFFlat.cu
   GpuIndexIVFPQ.cu
   GpuIndexIVFScalarQuantizer.cu
+  GpuIndexIVFSQHybrid.cu
   GpuResources.cpp
   StandardGpuResources.cpp
   impl/BinaryDistance.cu
@@ -28,6 +29,7 @@ target_sources(faiss PRIVATE
   impl/IVFBase.cu
   impl/IVFFlat.cu
   impl/IVFFlatScan.cu
+  impl/IVFFlatScanLargeK.cu
   impl/IVFInterleaved.cu
   impl/IVFPQ.cu
   impl/IVFUtils.cu
@@ -47,12 +49,10 @@ target_sources(faiss PRIVATE
   impl/scan/IVFInterleaved1024.cu
   impl/scan/IVFInterleaved2048.cu
   utils/BlockSelectFloat.cu
-  utils/BlockSelectHalf.cu
   utils/DeviceUtils.cu
   utils/StackDeviceMemory.cpp
   utils/Timer.cpp
   utils/WarpSelectFloat.cu
-  utils/WarpSelectHalf.cu
   utils/blockselect/BlockSelectFloat1.cu
   utils/blockselect/BlockSelectFloat128.cu
   utils/blockselect/BlockSelectFloat256.cu
@@ -64,17 +64,6 @@ target_sources(faiss PRIVATE
   utils/blockselect/BlockSelectFloatT1024.cu
   utils/blockselect/BlockSelectFloatT2048.cu
   utils/blockselect/BlockSelectFloatT512.cu
-  utils/blockselect/BlockSelectHalf1.cu
-  utils/blockselect/BlockSelectHalf128.cu
-  utils/blockselect/BlockSelectHalf256.cu
-  utils/blockselect/BlockSelectHalf32.cu
-  utils/blockselect/BlockSelectHalf64.cu
-  utils/blockselect/BlockSelectHalfF1024.cu
-  utils/blockselect/BlockSelectHalfF2048.cu
-  utils/blockselect/BlockSelectHalfF512.cu
-  utils/blockselect/BlockSelectHalfT1024.cu
-  utils/blockselect/BlockSelectHalfT2048.cu
-  utils/blockselect/BlockSelectHalfT512.cu
   utils/warpselect/WarpSelectFloat1.cu
   utils/warpselect/WarpSelectFloat128.cu
   utils/warpselect/WarpSelectFloat256.cu
@@ -86,17 +75,6 @@ target_sources(faiss PRIVATE
   utils/warpselect/WarpSelectFloatT1024.cu
   utils/warpselect/WarpSelectFloatT2048.cu
   utils/warpselect/WarpSelectFloatT512.cu
-  utils/warpselect/WarpSelectHalf1.cu
-  utils/warpselect/WarpSelectHalf128.cu
-  utils/warpselect/WarpSelectHalf256.cu
-  utils/warpselect/WarpSelectHalf32.cu
-  utils/warpselect/WarpSelectHalf64.cu
-  utils/warpselect/WarpSelectHalfF1024.cu
-  utils/warpselect/WarpSelectHalfF2048.cu
-  utils/warpselect/WarpSelectHalfF512.cu
-  utils/warpselect/WarpSelectHalfT1024.cu
-  utils/warpselect/WarpSelectHalfT2048.cu
-  utils/warpselect/WarpSelectHalfT512.cu
 )
 
 set(FAISS_GPU_HEADERS
@@ -112,6 +90,7 @@ set(FAISS_GPU_HEADERS
   GpuIndexIVF.h
   GpuIndexIVFPQ.h
   GpuIndexIVFScalarQuantizer.h
+  GpuIndexIVFSQHybrid.h
   GpuIndicesOptions.h
   GpuResources.h
   StandardGpuResources.h
@@ -127,6 +106,7 @@ set(FAISS_GPU_HEADERS
   impl/IVFBase.cuh
   impl/IVFFlat.cuh
   impl/IVFFlatScan.cuh
+  impl/IVFFlatScanLargeK.cuh
   impl/IVFPQ.cuh
   impl/IVFUtils.cuh
   impl/L2Norm.cuh
@@ -140,6 +120,7 @@ set(FAISS_GPU_HEADERS
   impl/RemapIndices.h
   impl/VectorResidual.cuh
   utils/blockselect/BlockSelectImpl.cuh
+  utils/BlockSelectImpl.cuh
   utils/BlockSelectKernel.cuh
   utils/Comparators.cuh
   utils/ConversionOperators.cuh
@@ -191,6 +172,6 @@ endforeach()
 find_package(CUDAToolkit REQUIRED)
 
 find_package(OpenMP REQUIRED)
-target_link_libraries(faiss PRIVATE OpenMP::OpenMP_CXX)
+target_link_libraries(faiss PUBLIC OpenMP::OpenMP_CXX)
 
-target_link_libraries(faiss PRIVATE CUDA::cudart CUDA::cublas)
+target_link_libraries(faiss PUBLIC CUDA::cudart CUDA::cublas)

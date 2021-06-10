@@ -43,6 +43,7 @@ class IVFPQ : public IVFBase {
   /// Find the approximate k nearest neigbors for `queries` against
   /// our database
   void query(Tensor<float, 2, true>& queries,
+             Tensor<uint8_t, 1, true>& bitset,
              int nprobe,
              int k,
              Tensor<float, 2, true>& outDistances,
@@ -68,6 +69,7 @@ class IVFPQ : public IVFBase {
   /// Encode the vectors that we're adding and append to our IVF lists
   void appendVectors_(Tensor<float, 2, true>& vecs,
                       Tensor<Index::idx_t, 1, true>& indices,
+                      Tensor<uint8_t, 1, true>& bitset,
                       Tensor<int, 1, true>& uniqueLists,
                       Tensor<int, 1, true>& vectorsByUniqueList,
                       Tensor<int, 1, true>& uniqueListVectorStart,
@@ -93,6 +95,7 @@ class IVFPQ : public IVFBase {
 
   /// Runs kernels for scanning inverted lists with precomputed codes
   void runPQPrecomputedCodes_(Tensor<float, 2, true>& queries,
+                              Tensor<uint8_t, 1, true>& bitset,
                               DeviceTensor<float, 2, true>& coarseDistances,
                               DeviceTensor<int, 2, true>& coarseIndices,
                               int k,
@@ -101,6 +104,7 @@ class IVFPQ : public IVFBase {
 
   /// Runs kernels for scanning inverted lists without precomputed codes
   void runPQNoPrecomputedCodes_(Tensor<float, 2, true>& queries,
+                                Tensor<uint8_t, 1, true>& bitset,
                                 DeviceTensor<float, 2, true>& coarseDistances,
                                 DeviceTensor<int, 2, true>& coarseIndices,
                                 int k,
@@ -111,6 +115,7 @@ class IVFPQ : public IVFBase {
   /// different coarse centroid type)
   template <typename CentroidT>
   void runPQNoPrecomputedCodesT_(Tensor<float, 2, true>& queries,
+                                 Tensor<uint8_t, 1, true>& bitset,
                                  DeviceTensor<float, 2, true>& coarseDistances,
                                  DeviceTensor<int, 2, true>& coarseIndices,
                                  int k,
@@ -157,7 +162,9 @@ class IVFPQ : public IVFBase {
   DeviceTensor<float, 3, true> precomputedCode_;
 
   /// Precomputed term 2 in half form
+#ifdef FAISS_USE_FLOAT16 
   DeviceTensor<half, 3, true> precomputedCodeHalf_;
+#endif
 };
 
 } } // namespace

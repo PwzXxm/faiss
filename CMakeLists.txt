@@ -7,7 +7,7 @@
 cmake_minimum_required(VERSION 3.17 FATAL_ERROR)
 
 project(faiss
-  VERSION 1.6.4
+  VERSION 1.7.0
   DESCRIPTION "A library for efficient similarity search and clustering of dense vectors."
   HOMEPAGE_URL "https://github.com/facebookresearch/faiss"
   LANGUAGES CXX)
@@ -17,12 +17,24 @@ set(CMAKE_CXX_STANDARD 11)
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 
-# Valid values are "generic", "sse4", "avx2".
+# Valid values are "generic", "sse4", "avx2", "avx512".
 option(FAISS_OPT_LEVEL "" "generic")
 option(FAISS_ENABLE_GPU "Enable support for GPU indexes." ON)
 option(FAISS_ENABLE_PYTHON "Build Python extension." ON)
 
-if(FAISS_ENABLE_GPU)
+if (FAISS_CFLAGS)
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${FAISS_CFLAGS} ${FAISS_CPPFLAGS}")
+endif()
+
+if (FAISS_CXXFLAGS)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${FAISS_CXXFLAGS} ${FAISS_CPPFLAGS}")
+endif()
+
+if (FAISS_ENABLE_GPU)
+  # externalproject_add use semicolon to separate commands, revert to desired format
+  if (CMAKE_CUDA_ARCHITECTURES)
+    string(REPLACE ":" ";" CMAKE_CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+  endif()
   set(CMAKE_CUDA_HOST_COMPILER ${CMAKE_CXX_COMPILER})
   enable_language(CUDA)
 endif()

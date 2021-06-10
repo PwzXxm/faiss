@@ -272,6 +272,7 @@ runMultiPassTile(GpuResources* res,
                  NoTypeTensor<4, true>& codeDistances,
                  Tensor<float, 2, true>& coarseDistances,
                  Tensor<int, 2, true>& coarseIndices,
+                 Tensor<uint8_t, 1, true>& bitset,
                  bool useFloat16Lookup,
                  bool useMMCodeDistance,
                  bool interleavedCodeLayout,
@@ -297,6 +298,10 @@ runMultiPassTile(GpuResources* res,
                metric == MetricType::METRIC_L2);
 
   bool l2Distance = metric == MetricType::METRIC_L2;
+
+#ifndef FAISS_USE_FLOAT16
+    FAISS_ASSERT(!useFloat16Lookup);
+#endif
 
   // Calculate offset lengths, so we know where to write out
   // intermediate results
@@ -338,6 +343,7 @@ runMultiPassTile(GpuResources* res,
                                      allDistances);             \
     } while (0)
 
+#ifdef FAISS_USE_FLOAT16
     if (useFloat16Lookup) {
       auto codeDistancesT = codeDistances.toTensor<half>();
 
@@ -395,6 +401,35 @@ runMultiPassTile(GpuResources* res,
           break;
       }
     }
+#else
+    auto codeDistancesT = codeDistances.toTensor<float>();
+
+    switch (bitsPerSubQuantizer) {
+      case 4:
+      {
+        RUN_INTERLEAVED(4, float);
+      }
+      break;
+      case 5:
+      {
+        RUN_INTERLEAVED(5, float);
+      }
+      break;
+      case 6:
+      {
+        RUN_INTERLEAVED(6, float);
+      }
+      break;
+      case 8:
+      {
+        RUN_INTERLEAVED(8, float);
+      }
+      break;
+      default:
+        FAISS_ASSERT(false);
+        break;
+    }
+#endif
   } else {
     // Convert all codes to a distance, and write out (distance,
     // index) values for all intermediate results
@@ -405,7 +440,11 @@ runMultiPassTile(GpuResources* res,
     auto block = dim3(kThreadsPerBlock);
 
     // pq centroid distances
-    auto smem = useFloat16Lookup ? sizeof(half) : sizeof(float);
+#ifdef FAISS_USE_FLOAT16
+    auto smem = (sizeof(float)== useFloat16Lookup) ? sizeof(half) : sizeof(float);
+#else
+    auto smem = sizeof(float);
+#endif
 
     smem *= numSubQuantizers * numSubQuantizerCodes;
     FAISS_ASSERT(smem <= getMaxSharedMemPerBlockCurrentDevice());
@@ -418,7 +457,7 @@ runMultiPassTile(GpuResources* res,
         <<<grid, block, smem, stream>>>(                                \
           queries,                                                      \
           pqCentroidsInnermostCode,                                     \
-          coarseIndices,                                           \
+          coarseIndices,                                                \
           codeDistancesT,                                               \
           listCodes.data().get(),                                       \
           listLengths.data().get(),                                     \
@@ -426,6 +465,7 @@ runMultiPassTile(GpuResources* res,
           allDistances);                                                \
     } while (0)
 
+#ifdef FAISS_USE_FLOAT16
 #define RUN_PQ(NUM_SUB_Q)                       \
     do {                                        \
       if (useFloat16Lookup) {                   \
@@ -434,6 +474,12 @@ runMultiPassTile(GpuResources* res,
         RUN_PQ_OPT(NUM_SUB_Q, float, float4);   \
       }                                         \
     } while (0)
+#else
+#define RUN_PQ(NUM_SUB_Q)                       \
+    do {                                        \
+        RUN_PQ_OPT(NUM_SUB_Q, float, float4);   \
+    } while (0)
+#endif
 
     switch (numSubQuantizers) {
       case 1:
@@ -496,7 +542,11 @@ runMultiPassTile(GpuResources* res,
   CUDA_TEST_ERROR();
 
   // k-select the output in chunks, to increase parallelism
-  runPass1SelectLists(prefixSumOffsets,
+  runPass1SelectLists(listIndices,
+                      indicesOptions,
+                      prefixSumOffsets,
+                      coarseIndices,
+                      bitset,
                       allDistances,
                       coarseIndices.getSize(1),
                       k,
@@ -529,6 +579,7 @@ runPQScanMultiPassNoPrecomputed(Tensor<float, 2, true>& queries,
                                 Tensor<float, 3, true>& pqCentroidsInnermostCode,
                                 Tensor<float, 2, true>& coarseDistances,
                                 Tensor<int, 2, true>& coarseIndices,
+                                Tensor<uint8_t, 1, true>& bitset,
                                 bool useFloat16Lookup,
                                 bool useMMCodeDistance,
                                 bool interleavedCodeLayout,
@@ -630,7 +681,12 @@ runPQScanMultiPassNoPrecomputed(Tensor<float, 2, true>& queries,
                               sizeof(int),
                               stream));
 
-  int codeDistanceTypeSize = useFloat16Lookup ? sizeof(half) : sizeof(float);
+  int codeDistanceTypeSize = sizeof(float);
+#ifdef FAISS_USE_FLOAT16
+  if (useFloat16Lookup) {
+    codeDistanceTypeSize = sizeof(half);
+  }
+#endif
 
   int totalCodeDistancesSize =
     queryTileSize * nprobe * numSubQuantizers * numSubQuantizerCodes *
@@ -720,6 +776,7 @@ runPQScanMultiPassNoPrecomputed(Tensor<float, 2, true>& queries,
                      codeDistancesView,
                      coarseDistancesView,
                      coarseIndicesView,
+                     bitset,
                      useFloat16Lookup,
                      useMMCodeDistance,
                      interleavedCodeLayout,

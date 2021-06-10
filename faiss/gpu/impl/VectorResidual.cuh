@@ -19,11 +19,13 @@ void runCalcResidual(Tensor<float, 2, true>& vecs,
                      Tensor<float, 2, true>& residuals,
                      cudaStream_t stream);
 
+#ifdef FAISS_USE_FLOAT16
 void runCalcResidual(Tensor<float, 2, true>& vecs,
                      Tensor<half, 2, true>& centroids,
                      Tensor<int, 1, true>& vecToCentroid,
                      Tensor<float, 2, true>& residuals,
                      cudaStream_t stream);
+#endif
 
 // Gather vectors
 void runReconstruct(Tensor<int, 1, true>& listIds,
@@ -31,9 +33,11 @@ void runReconstruct(Tensor<int, 1, true>& listIds,
                     Tensor<float, 2, true>& out,
                     cudaStream_t stream);
 
+#ifdef FAISS_USE_FLOAT16
 void runReconstruct(Tensor<int, 1, true>& listIds,
                     Tensor<half, 2, true>& vecs,
                     Tensor<float, 2, true>& out,
                     cudaStream_t stream);
+#endif
 
 } } // namespace

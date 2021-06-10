@@ -46,6 +46,7 @@ __forceinline__ __device__ void warpFence() {
 // compiled with), the register allocation algorithm is much better, so only
 // enable the 2048 selection code if we are above 9.0 (9.2 seems to be ok)
 #define GPU_MAX_SELECTION_K 2048
+// #define GPU_MAX_SELECTION_K 16384
 #else
 #define GPU_MAX_SELECTION_K 1024
 #endif

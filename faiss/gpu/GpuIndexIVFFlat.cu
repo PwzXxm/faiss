@@ -91,8 +91,15 @@ GpuIndexIVFFlat::copyFrom(const faiss::IndexIVFFlat* index) {
                            ivfFlatConfig_.indicesOptions,
                            config_.memorySpace));
 
-  // Copy all of the IVF data
-  index_->copyInvertedListsFrom(index->invlists);
+  if (ReadOnlyArrayInvertedLists* rol = dynamic_cast<ReadOnlyArrayInvertedLists*>(index->invlists)) {
+    index_->copyCodeVectorsFromCpu((const float *)(rol->pin_readonly_codes->data),
+                                   (const idx_t *)(rol->pin_readonly_ids->data), rol->readonly_length);
+    /* double t0 = getmillisecs(); */
+    /* std::cout << "Readonly Takes " << getmillisecs() - t0 << " ms" << std::endl; */
+  } else {
+    // Copy all of the IVF data
+    index_->copyInvertedListsFrom(index->invlists);
+  }
 }
 
 void
@@ -233,17 +240,33 @@ GpuIndexIVFFlat::searchImpl_(int n,
                              const float* x,
                              int k,
                              float* distances,
-                             Index::idx_t* labels) const {
+                             Index::idx_t* labels,
+                             ConcurrentBitsetPtr bitset) const {
   // Device is already set in GpuIndex::search
   FAISS_ASSERT(index_);
   FAISS_ASSERT(n > 0);
+  const bool enableQuerySlicing = false;
+
+  auto stream = resources_->getDefaultStream(config_.device);
 
   // Data is already resident on the GPU
   Tensor<float, 2, true> queries(const_cast<float*>(x), {n, (int) this->d});
   Tensor<float, 2, true> outDistances(distances, {n, k});
   Tensor<Index::idx_t, 2, true> outLabels(const_cast<Index::idx_t*>(labels), {n, k});
 
-  index_->query(queries, nprobe, k, outDistances, outLabels);
+  if (!bitset) {
+    auto bitsetDevice = toDeviceTemporary<uint8_t, 1>(resources_.get(), config_.device, nullptr, stream, {0});
+    if (enableQuerySlicing) {
+      index_->query(queries, bitsetDevice, nprobe, k, outDistances, outLabels, distances, labels);
+    } else {
+      index_->query(queries, bitsetDevice, nprobe, k, outDistances, outLabels);
+    }
+  } else {
+    auto bitsetDevice = toDeviceTemporary<uint8_t, 1>(resources_.get(), config_.device,
+                                             const_cast<uint8_t*>(bitset->data()), stream,
+                                             {(int) bitset->size()});
+    index_->query(queries, bitsetDevice, nprobe, k, outDistances, outLabels);
+  }
 }
 
 

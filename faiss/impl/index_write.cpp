@@ -35,6 +35,7 @@
 #include <faiss/IndexIVFSpectralHash.h>
 #include <faiss/MetaIndexes.h>
 #include <faiss/IndexScalarQuantizer.h>
+#include <faiss/IndexSQHybrid.h>
 #include <faiss/IndexHNSW.h>
 #include <faiss/IndexLattice.h>
 #include <faiss/IndexPQFastScan.h>
@@ -209,7 +210,24 @@ void write_InvertedLists (const InvertedLists *ils, IOWriter *f) {
                 WRITEANDCHECK (ails->ids[i].data(), n);
             }
         }
-
+    } else if (const auto & oa =
+            dynamic_cast<const ReadOnlyArrayInvertedLists *>(ils)) {
+        uint32_t h = fourcc("iloa");
+        WRITE1 (h);
+        WRITE1 (oa->nlist);
+        WRITE1 (oa->code_size);
+        WRITEVECTOR(oa->readonly_length);
+#ifdef USE_CPU
+        size_t n = oa->readonly_ids.size();
+        WRITE1(n);
+        WRITEANDCHECK(oa->readonly_ids.data(), n);
+        WRITEANDCHECK(oa->readonly_codes.data(), n * oa->code_size);
+#else
+        size_t n = oa->pin_readonly_ids->size() / sizeof(InvertedLists::idx_t);
+        WRITE1(n);
+        WRITEANDCHECK((InvertedLists::idx_t *) oa->pin_readonly_ids->data, n);
+        WRITEANDCHECK((uint8_t *) oa->pin_readonly_codes->data, n * oa->code_size);
+#endif
     } else {
         InvertedListsIOHook::lookup_classname(
                 typeid(*ils).name())->write(ils, f);
@@ -349,6 +367,15 @@ void write_index (const Index *idx, IOWriter *f) {
         WRITE1 (ivsc->code_size);
         WRITE1 (ivsc->by_residual);
         write_InvertedLists (ivsc->invlists, f);
+    } else if(const IndexIVFSQHybrid *ivfsqhbyrid =
+            dynamic_cast<const IndexIVFSQHybrid*>(idx)) {
+        uint32_t h = fourcc ("ISqH");
+        WRITE1 (h);
+        write_ivf_header (ivfsqhbyrid, f);
+        write_ScalarQuantizer (&ivfsqhbyrid->sq, f);
+        WRITE1 (ivfsqhbyrid->code_size);
+        WRITE1 (ivfsqhbyrid->by_residual);
+        write_InvertedLists (ivfsqhbyrid->invlists, f);
     } else if(const IndexIVFSpectralHash *ivsp =
               dynamic_cast<const IndexIVFSpectralHash *>(idx)) {
         uint32_t h = fourcc ("IwSh");

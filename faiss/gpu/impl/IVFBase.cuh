@@ -62,7 +62,10 @@ class IVFBase {
   /// Return the list indices of a particular list back to the CPU
   std::vector<Index::idx_t> getListIndices(int listId) const;
 
-  /// Return the encoded vectors of a particular list back to the CPU
+  // didn't use it anywhere; Dangerous to do so
+  // DeviceVector<uint8_t>* getTrainedData() { return deviceTrained_.get(); };
+
+    /// Return the encoded vectors of a particular list back to the CPU
   std::vector<uint8_t> getListVectorData(int listId, bool gpuFormat) const;
 
   /// Copy all inverted lists from a CPU representation to ourselves
@@ -71,6 +74,10 @@ class IVFBase {
   /// Copy all inverted lists from ourselves to a CPU representation
   void copyInvertedListsTo(InvertedLists* ivf);
 
+  void copyCodeVectorsFromCpu(const float* vecs,
+                              const Index::idx_t* indices,
+                              const std::vector<size_t>& list_length);
+
   /// Classify and encode/add vectors to our IVF lists.
   /// The input data must be on our current device.
   /// Returns the number of vectors successfully added. Vectors may
@@ -78,7 +85,13 @@ class IVFBase {
   int addVectors(Tensor<float, 2, true>& vecs,
                  Tensor<Index::idx_t, 1, true>& indices);
 
- protected:
+  void copyIndicesFromCpu_(const long* indices,
+                           const std::vector<size_t>& list_length);
+
+  void addTrainedDataFromCpu_(const uint8_t* trained, size_t numData);
+
+
+protected:
   /// Adds a set of codes and indices to a list, with the representation coming
   /// from the CPU equivalent
   void addEncodedVectorsToList_(int listId,
@@ -106,6 +119,7 @@ class IVFBase {
   /// Append vectors to our on-device lists
   virtual void appendVectors_(Tensor<float, 2, true>& vecs,
                               Tensor<Index::idx_t, 1, true>& indices,
+                              Tensor<uint8_t, 1, true>& bitset,
                               Tensor<int, 1, true>& uniqueLists,
                               Tensor<int, 1, true>& vectorsByUniqueList,
                               Tensor<int, 1, true>& uniqueListVectorStart,
@@ -199,6 +213,10 @@ class IVFBase {
   /// resizing (and potential re-allocation) of deviceList*_
   std::vector<std::unique_ptr<DeviceIVFList>> deviceListData_;
   std::vector<std::unique_ptr<DeviceIVFList>> deviceListIndices_;
+
+  std::unique_ptr<DeviceIVFList> deviceData_;
+  std::unique_ptr<DeviceIVFList> deviceIndices_;
+  std::unique_ptr<DeviceIVFList> deviceTrained_;
 
   /// If we are storing indices on the CPU (indicesOptions_ is
   /// INDICES_CPU), then this maintains a CPU-side map of what

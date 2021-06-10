@@ -29,6 +29,7 @@
 
 #include <faiss/impl/platform_macros.h>
 #include <faiss/utils/Heap.h>
+#include <faiss/utils/ConcurrentBitset.h>
 
 
 /* The Hamming distance type */
@@ -130,9 +131,6 @@ void hammings (
         size_t na, size_t nb,
         size_t nbytespercode,
         hamdis_t * dis);
-
-
-
 
 /** Return the k smallest Hamming distances for a set of binary query vectors,
  * using a max heap.
