@@ -17,6 +17,7 @@
 #define FAISS_utils_h
 
 #include <stdint.h>
+#include <string>
 
 #ifdef _MSC_VER
 #define strtok_r strtok_s
@@ -25,6 +26,13 @@
 #include <faiss/utils/Heap.h>
 
 namespace faiss {
+
+/****************************************************************************
+ * Get compile specific variables
+ ***************************************************************************/
+
+/// get compile options
+std::string get_compile_options();
 
 /**************************************************
  * Get some stats about the system
@@ -72,7 +80,7 @@ void matrix_qr(int m, int n, float* a);
 /** distances are supposed to be sorted. Sorts indices with same distance*/
 void ranklist_handle_ties(int k, int64_t* idx, const float* dis);
 
-/** count the number of comon elements between v1 and v2
+/** count the number of common elements between v1 and v2
  * algorithm = sorting + bissection to avoid double-counting duplicates
  */
 size_t ranklist_intersection_size(

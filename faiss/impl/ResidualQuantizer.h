@@ -7,11 +7,11 @@
 
 #pragma once
 
-#include <stdint.h>
-
+#include <cstdint>
 #include <vector>
 
 #include <faiss/Clustering.h>
+#include <faiss/impl/AdditiveQuantizer.h>
 
 namespace faiss {
 
@@ -22,18 +22,7 @@ namespace faiss {
  * as the compact output (n, code_size).
  */
 
-struct ResidualQuantizer {
-    size_t d;                  ///< size of the input vectors
-    size_t M;                  ///< number of steps
-    std::vector<size_t> nbits; ///< bits for each step
-
-    bool verbose; ///< verbose during training?
-
-    // derived values
-    std::vector<size_t> centroid_offsets;
-    size_t code_size;
-    bool is_byte_aligned;
-
+struct ResidualQuantizer : AdditiveQuantizer {
     /// initialization
     enum train_type_t {
         Train_default,         ///< regular k-means
@@ -49,7 +38,7 @@ struct ResidualQuantizer {
     int max_beam_size;
 
     /// distance matrixes with beam search can get large, so use this
-    /// to batch computations.
+    /// to batch computations at encoding time.
     size_t max_mem_distances;
 
     /// clustering parameters
@@ -57,9 +46,6 @@ struct ResidualQuantizer {
 
     /// if non-NULL, use this index for assignment
     ProgressiveDimIndexFactory* assign_index_factory;
-
-    /// size d * centroid_offsets.end()
-    std::vector<float> centroids;
 
     ResidualQuantizer(size_t d, const std::vector<size_t>& nbits);
 
@@ -70,35 +56,41 @@ struct ResidualQuantizer {
 
     ResidualQuantizer();
 
-    /// compute derived values when d, M and nbits have been set
-    void set_derived_values();
-
     // Train the residual quantizer
-    void train(size_t n, const float* x);
-
-    /** pack a series of code to bit-compact format
-     *
-     * @param ld_codes  leading dimension of codes
-     */
-    void pack_codes(
-            size_t n,
-            const int32_t* codes,
-            uint8_t* packed_codes,
-            int64_t ld_codes = -1) const;
+    void train(size_t n, const float* x) override;
 
     /** Encode a set of vectors
      *
      * @param x      vectors to encode, size n * d
      * @param codes  output codes, size n * code_size
      */
-    void compute_codes(const float* x, uint8_t* codes, size_t n) const;
+    void compute_codes(const float* x, uint8_t* codes, size_t n) const override;
 
-    /** Decode a set of vectors
+    /** lower-level encode function
      *
-     * @param codes  codes to decode, size n * code_size
-     * @param x      output vectors, size n * d
+     * @param n              number of vectors to hanlde
+     * @param residuals      vectors to encode, size (n, beam_size, d)
+     * @param beam_size      input beam size
+     * @param new_beam_size  output beam size (should be <= K * beam_size)
+     * @param new_codes      output codes, size (n, new_beam_size, m + 1)
+     * @param new_residuals  output residuals, size (n, new_beam_size, d)
+     * @param new_distances  output distances, size (n, new_beam_size)
      */
-    void decode(const uint8_t* code, float* x, size_t n) const;
+    void refine_beam(
+            size_t n,
+            size_t beam_size,
+            const float* residuals,
+            int new_beam_size,
+            int32_t* new_codes,
+            float* new_residuals = nullptr,
+            float* new_distances = nullptr) const;
+
+    /** Beam search can consume a lot of memory. This function estimates the
+     * amount of mem used by refine_beam to adjust the batch size
+     *
+     * @param beam_size  if != -1, override the beam size
+     */
+    size_t memory_per_point(int beam_size = -1) const;
 };
 
 /** Encode a residual by sampling from a centroid table.

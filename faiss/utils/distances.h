@@ -5,8 +5,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-// -*- c++ -*-
-
 /* All distance functions for L2 and IP distances.
  * The actual functions are implemented in distances.cpp and distances_simd.cpp
  */
@@ -33,6 +31,7 @@ float fvec_inner_product(const float* x, const float* y, size_t d);
 /// L1 distance
 float fvec_L1(const float* x, const float* y, size_t d);
 
+/// infinity distance
 float fvec_Linf(const float* x, const float* y, size_t d);
 
 /** Compute pairwise distances between sets of vectors
@@ -41,7 +40,7 @@ float fvec_Linf(const float* x, const float* y, size_t d);
  * @param nq    nb of query vectors
  * @param nb    nb of database vectors
  * @param xq    query vectors (size nq * d)
- * @param xb    database vectros (size nb * d)
+ * @param xb    database vectors (size nb * d)
  * @param dis   output distances (size nq * nb)
  * @param ldq,ldb, ldd strides for the matrices
  */
@@ -64,7 +63,7 @@ void fvec_inner_products_ny(
         size_t d,
         size_t ny);
 
-/* compute ny square L2 distance bewteen x and a set of contiguous y vectors */
+/* compute ny square L2 distance between x and a set of contiguous y vectors */
 void fvec_L2sqr_ny(
         float* dis,
         const float* x,
@@ -77,18 +76,18 @@ float fvec_norm_L2sqr(const float* x, size_t d);
 
 /** compute the L2 norms for a set of vectors
  *
- * @param  ip       output norms, size nx
+ * @param  norms    output norms, size nx
  * @param  x        set of vectors, size nx * d
  */
-void fvec_norms_L2(float* ip, const float* x, size_t d, size_t nx);
+void fvec_norms_L2(float* norms, const float* x, size_t d, size_t nx);
 
-/// same as fvec_norms_L2, but computes square norms
-void fvec_norms_L2sqr(float* ip, const float* x, size_t d, size_t nx);
+/// same as fvec_norms_L2, but computes squared norms
+void fvec_norms_L2sqr(float* norms, const float* x, size_t d, size_t nx);
 
 /* L2-renormalize a set of vector. Nothing done if the vector is 0-normed */
 void fvec_renorm_L2(size_t d, size_t nx, float* x);
 
-/* This function exists because the Torch counterpart is extremly slow
+/* This function exists because the Torch counterpart is extremely slow
    (not multi-threaded + unexpected overhead even in single thread).
    It is here to implement the usual property |x-y|^2=|x|^2+|y|^2-2<x|y>  */
 void inner_product_to_L2sqr(
@@ -260,5 +259,9 @@ void compute_PQ_dis_tables_dsub2(
         const float* x,
         bool is_inner_product,
         float* dis_tables);
+
+/***************************************************************************
+ * Templatized versions of distance functions
+ ***************************************************************************/
 
 } // namespace faiss

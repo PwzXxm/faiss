@@ -70,6 +70,7 @@ typedef uint64_t size_t;
 #include <faiss/IndexPreTransform.h>
 #include <faiss/IndexLSH.h>
 #include <faiss/IndexPQ.h>
+#include <faiss/IndexResidual.h>
 #include <faiss/IndexIVF.h>
 #include <faiss/IndexIVFPQ.h>
 #include <faiss/Index2Layer.h>
@@ -118,7 +119,9 @@ typedef uint64_t size_t;
 #include <faiss/utils/AlignedTable.h>
 #include <faiss/utils/partitioning.h>
 #include <faiss/impl/AuxIndexStructures.h>
-#include  <faiss/impl/ResidualQuantizer.h>
+#include <faiss/impl/AdditiveQuantizer.h>
+#include <faiss/impl/ResidualQuantizer.h>
+#include <faiss/impl/LocalSearchQuantizer.h>
 
 #include <faiss/invlists/BlockInvertedLists.h>
 
@@ -374,7 +377,9 @@ void gpu_sync_all_devices()
 %ignore faiss::ProductQuantizer::get_centroids(size_t,size_t) const;
 
 %include  <faiss/impl/ProductQuantizer.h>
+%include  <faiss/impl/AdditiveQuantizer.h>
 %include  <faiss/impl/ResidualQuantizer.h>
+%include  <faiss/impl/LocalSearchQuantizer.h>
 
 %include  <faiss/VectorTransform.h>
 %include  <faiss/IndexPreTransform.h>
@@ -383,6 +388,7 @@ void gpu_sync_all_devices()
 %include  <faiss/IndexLSH.h>
 %include  <faiss/impl/PolysemousTraining.h>
 %include  <faiss/IndexPQ.h>
+%include  <faiss/IndexResidual.h>
 %include  <faiss/impl/io.h>
 
 %include  <faiss/invlists/InvertedLists.h>
@@ -547,6 +553,8 @@ void gpu_sync_all_devices()
     DOWNCAST ( IndexRefine )
     DOWNCAST ( IndexPQFastScan )
     DOWNCAST ( IndexPQ )
+    DOWNCAST ( IndexResidual )
+    DOWNCAST ( ResidualCoarseQuantizer )
     DOWNCAST ( IndexScalarQuantizer )
     DOWNCAST ( IndexLSH )
     DOWNCAST ( IndexLattice )
