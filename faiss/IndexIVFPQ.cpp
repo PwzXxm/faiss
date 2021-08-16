@@ -42,7 +42,12 @@ IndexIVFPQ::IndexIVFPQ(
         size_t nlist,
         size_t M,
         size_t nbits_per_idx,
+#ifdef TEST_OPQ
+        MetricType metric,
+        OPQMatrix* _opq)
+#else
         MetricType metric)
+#endif
         : IndexIVF(quantizer, d, nlist, 0, metric), pq(d, M, nbits_per_idx) {
     FAISS_THROW_IF_NOT(nbits_per_idx <= 8);
     code_size = pq.code_size;
@@ -55,6 +60,11 @@ IndexIVFPQ::IndexIVFPQ(
     polysemous_training = nullptr;
     do_polysemous_training = false;
     polysemous_ht = 0;
+
+#ifdef TEST_OPQ
+    opq = _opq;
+    // opq->verbose = true;
+#endif
 }
 
 /****************************************************************
@@ -92,6 +102,11 @@ void IndexIVFPQ::train_residual_o(idx_t n, const float* x, float* residuals_2) {
                     x + i * d, residuals + i * d, assign[i]);
 
         trainset = residuals;
+
+#ifdef TEST_OPQ
+        opq->train(n, trainset);
+        trainset = opq->apply(n, trainset);
+#endif
     } else {
         trainset = x;
     }
@@ -133,6 +148,12 @@ void IndexIVFPQ::train_residual_o(idx_t n, const float* x, float* residuals_2) {
     if (by_residual) {
         precompute_table();
     }
+
+#ifdef TEST_OPQ
+    if (opq->is_trained) {
+        delete[] trainset;
+    }
+#endif
 }
 
 /****************************************************************
@@ -312,6 +333,11 @@ void IndexIVFPQ::add_core_o(
     } else {
         to_encode = x;
     }
+
+#ifdef TEST_OPQ
+    to_encode = opq->apply(n, to_encode);
+#endif
+
     pq.compute_codes(to_encode, xcodes, n);
 
     double t2 = getmillisecs();
@@ -354,6 +380,10 @@ void IndexIVFPQ::add_core_o(
                comment);
     }
     ntotal += n;
+
+#ifdef TEST_OPQ
+    if (opq->is_trained) delete[] to_encode;
+#endif
 }
 
 void IndexIVFPQ::reconstruct_from_offset(
@@ -413,7 +443,12 @@ void initialize_IVFPQ_precomputed_table(
         const Index* quantizer,
         const ProductQuantizer& pq,
         AlignedTable<float>& precomputed_table,
+#ifdef TEST_OPQ
+        bool verbose,
+        IndexIVFPQ *ivfpq) {
+#else
         bool verbose) {
+#endif
     size_t nlist = quantizer->ntotal;
     size_t d = quantizer->d;
     FAISS_THROW_IF_NOT(d == pq.d);
@@ -470,9 +505,17 @@ void initialize_IVFPQ_precomputed_table(
         for (size_t i = 0; i < nlist; i++) {
             quantizer->reconstruct(i, centroid.data());
 
+#ifdef TEST_OPQ
+            float *c = ivfpq->opq->apply(1, centroid.data());
+            float* tab = &precomputed_table[i * pq.M * pq.ksub];
+            pq.compute_inner_prod_table(c, tab);
+            fvec_madd(pq.M * pq.ksub, r_norms.data(), 2.0, tab, tab);
+            delete[] c;
+#else
             float* tab = &precomputed_table[i * pq.M * pq.ksub];
             pq.compute_inner_prod_table(centroid.data(), tab);
             fvec_madd(pq.M * pq.ksub, r_norms.data(), 2.0, tab, tab);
+#endif
         }
     } else if (use_precomputed_table == 2) {
         const MultiIndexQuantizer* miq =
@@ -505,8 +548,13 @@ void initialize_IVFPQ_precomputed_table(
 }
 
 void IndexIVFPQ::precompute_table() {
+#ifdef TEST_OPQ
+    initialize_IVFPQ_precomputed_table(
+            use_precomputed_table, quantizer, pq, precomputed_table, verbose, this);
+#else
     initialize_IVFPQ_precomputed_table(
             use_precomputed_table, quantizer, pq, precomputed_table, verbose);
+#endif
 }
 
 namespace {
@@ -564,6 +612,10 @@ struct QueryTables {
         residual_vec = sim_table_2 + pq.ksub * pq.M;
         decoded_vec = residual_vec + d;
 
+#ifdef TEST_OPQ
+        qi_v.resize(d);
+#endif
+
         // for polysemous
         polysemous_ht = ivfpq.polysemous_ht;
         if (auto ivfpq_params =
@@ -581,12 +633,20 @@ struct QueryTables {
      * What we do when query is known
      *****************************************************/
 
+#ifdef TEST_OPQ
+    std::vector<float> qi_v;
+#endif
     // field specific to query
     const float* qi;
 
     // query-specific initialization
     void init_query(const float* qi) {
+#ifdef TEST_OPQ
+        ivfpq.opq->apply_noalloc(1, qi, qi_v.data());
+        this->qi = qi_v.data();
+#else
         this->qi = qi;
+#endif
         if (metric_type == METRIC_INNER_PRODUCT)
             init_query_IP();
         else
@@ -597,6 +657,8 @@ struct QueryTables {
 
     void init_query_IP() {
         // precompute some tables specific to the query qi
+
+        // pq.compute_inner_prod_table(ivfpq.opq->apply(1, qi), sim_table);
         pq.compute_inner_prod_table(qi, sim_table);
     }
 
@@ -658,6 +720,12 @@ struct QueryTables {
         // prepare the sim_table that will be used for accumulation
         // and dis0, the initial value
         ivfpq.quantizer->reconstruct(key, decoded_vec);
+#ifdef TEST_OPQ
+        float* c = ivfpq.opq->apply(1, decoded_vec);
+        memcpy(decoded_vec, c, d * sizeof(float));
+        delete[] c;
+#endif
+
         // decoded_vec = centroid
         float dis0 = fvec_inner_product(qi, decoded_vec, d);
 

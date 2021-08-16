@@ -16,6 +16,9 @@
 #include <faiss/IndexPQ.h>
 #include <faiss/impl/platform_macros.h>
 #include <faiss/utils/AlignedTable.h>
+#include <faiss/VectorTransform.h>
+
+#define TEST_OPQ
 
 namespace faiss {
 
@@ -48,6 +51,10 @@ struct IndexIVFPQ : IndexIVF {
      */
     int use_precomputed_table;
 
+#ifdef TEST_OPQ
+    OPQMatrix* opq;
+#endif
+
     /// if use_precompute_table
     /// size nlist * pq.M * pq.ksub
     AlignedTable<float> precomputed_table;
@@ -58,7 +65,13 @@ struct IndexIVFPQ : IndexIVF {
             size_t nlist,
             size_t M,
             size_t nbits_per_idx,
+#ifdef TEST_OPQ
+            MetricType metric = METRIC_L2,
+            OPQMatrix* opq = nullptr);
+#else
             MetricType metric = METRIC_L2);
+#endif
+
 
     void encode_vectors(
             idx_t n,
@@ -158,7 +171,12 @@ void initialize_IVFPQ_precomputed_table(
         const Index* quantizer,
         const ProductQuantizer& pq,
         AlignedTable<float>& precomputed_table,
+#ifdef TEST_OPQ
+        bool verbose, 
+        faiss::IndexIVFPQ *ivfpq = nullptr);
+#else
         bool verbose);
+#endif
 
 /// statistics are robust to internal threading, but not if
 /// IndexIVFPQ::search_preassigned is called by multiple threads
